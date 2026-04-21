@@ -1,0 +1,16 @@
+FROM debian:bookworm-slim AS fetcher
+ARG AGAVE_VERSION=3.1.11
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends curl ca-certificates bzip2 && \
+    rm -rf /var/lib/apt/lists/*
+RUN curl -fL "https://github.com/anza-xyz/agave/releases/download/v${AGAVE_VERSION}/solana-release-x86_64-unknown-linux-gnu.tar.bz2" \
+    | tar -xj -C /tmp && \
+    mv /tmp/solana-release/bin/solana-test-validator /solana-test-validator && \
+    chmod +x /solana-test-validator
+
+FROM debian:bookworm-slim
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends libssl3 ca-certificates && \
+    rm -rf /var/lib/apt/lists/*
+COPY --from=fetcher /solana-test-validator /usr/local/bin/solana-test-validator
+ENTRYPOINT ["/usr/local/bin/solana-test-validator"]

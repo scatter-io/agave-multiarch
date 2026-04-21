@@ -1,0 +1,124 @@
+name: build
+
+on:
+  workflow_dispatch:
+    inputs:
+      agave_version:
+        description: "Agave version (no leading v)"
+        required: true
+        default: "3.1.11"
+  push:
+    branches: [main]
+    paths:
+      - "Dockerfile.*"
+      - ".github/workflows/build.yml"
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAME: ${{ github.repository }}
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: amd64
+            runner: ubuntu-24.04
+            dockerfile: Dockerfile.amd64
+            platform: linux/amd64
+          - arch: arm64
+            runner: ubuntu-24.04-arm
+            dockerfile: Dockerfile.arm64
+            platform: linux/arm64
+    runs-on: ${{ matrix.runner }}
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: docker/setup-buildx-action@v3
+
+      - uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Resolve Agave version
+        id: ver
+        run: |
+          VERSION="${{ inputs.agave_version }}"
+          if [ -z "$VERSION" ]; then VERSION="3.1.11"; fi
+          echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
+
+      - name: Build and push by digest
+        id: build
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: ${{ matrix.dockerfile }}
+          platforms: ${{ matrix.platform }}
+          build-args: |
+            AGAVE_VERSION=${{ steps.ver.outputs.version }}
+          outputs: |
+            type=image,name=${{ env.REGISTRY }}/${{ env.IMAGE_NAME }},push-by-digest=true,name-canonical=true,push=true
+
+      - name: Export digest
+        run: |
+          mkdir -p /tmp/digests
+          echo "${{ steps.build.outputs.digest }}" > "/tmp/digests/${{ matrix.arch }}"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: digest-${{ matrix.arch }}
+          path: /tmp/digests/*
+          retention-days: 1
+
+  merge:
+    needs: build
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: /tmp/digests
+          pattern: digest-*
+          merge-multiple: true
+
+      - uses: docker/setup-buildx-action@v3
+
+      - uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Resolve Agave version
+        id: ver
+        run: |
+          VERSION="${{ inputs.agave_version }}"
+          if [ -z "$VERSION" ]; then VERSION="3.1.11"; fi
+          echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
+
+      - name: Create multi-arch manifest
+        run: |
+          VERSION="${{ steps.ver.outputs.version }}"
+          IMAGE="${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}"
+          SOURCES=""
+          for f in /tmp/digests/*; do
+            DIGEST=$(cat "$f")
+            SOURCES="$SOURCES ${IMAGE}@${DIGEST}"
+          done
+          docker buildx imagetools create \
+            -t "${IMAGE}:v${VERSION}" \
+            -t "${IMAGE}:latest" \
+            ${SOURCES}
+
+      - name: Inspect manifest
+        run: |
+          VERSION="${{ steps.ver.outputs.version }}"
+          docker buildx imagetools inspect "${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:v${VERSION}"

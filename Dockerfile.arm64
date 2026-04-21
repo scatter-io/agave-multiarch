@@ -1,0 +1,28 @@
+FROM debian:bookworm AS builder
+ARG AGAVE_VERSION=3.1.11
+
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends \
+      ca-certificates curl git \
+      build-essential pkg-config \
+      libssl-dev libudev-dev \
+      protobuf-compiler \
+      clang cmake libclang-dev && \
+    rm -rf /var/lib/apt/lists/*
+
+RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | \
+    sh -s -- -y --default-toolchain none --profile minimal
+ENV PATH="/root/.cargo/bin:${PATH}"
+
+RUN git clone --depth 1 --branch "v${AGAVE_VERSION}" \
+      https://github.com/anza-xyz/agave.git /src
+WORKDIR /src
+
+RUN cargo build --release --bin solana-test-validator
+
+FROM debian:bookworm-slim
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends libssl3 ca-certificates && \
+    rm -rf /var/lib/apt/lists/*
+COPY --from=builder /src/target/release/solana-test-validator /usr/local/bin/solana-test-validator
+ENTRYPOINT ["/usr/local/bin/solana-test-validator"]
