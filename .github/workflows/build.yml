@@ -137,10 +137,8 @@ jobs:
             -t "${IMAGE}:v${VERSION}" \
             -t "${IMAGE}:latest" \
             ${SOURCES}
-          # Compute index digest from raw manifest bytes (sha256 of the bytes
-          # IS the content-addressable digest — guaranteed correct regardless
-          # of buildx version's template surface).
-          INDEX_DIGEST="sha256:$(docker buildx imagetools inspect "${IMAGE}:v${VERSION}" --raw | sha256sum | awk '{print $1}')"
+          INDEX_DIGEST=$(docker buildx imagetools inspect "${IMAGE}:v${VERSION}" | awk '/^Digest:/ {print $2; exit}')
+          if [ -z "${INDEX_DIGEST}" ]; then echo "failed to resolve index digest"; exit 1; fi
           echo "index_digest=${INDEX_DIGEST}" >> "$GITHUB_OUTPUT"
 
       - name: Attest build provenance (multi-arch index)
