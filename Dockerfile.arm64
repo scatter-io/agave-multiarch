@@ -1,4 +1,4 @@
-FROM debian:bookworm AS builder
+FROM debian:bookworm@sha256:8a8cd02c5912770b4980228a54d4aff9e4f986f1eb2525d2d371dec5232cefcc AS builder
 ARG AGAVE_VERSION=3.1.11
 ARG AGAVE_COMMIT_SHA=81d1f5fb0c75203329468250df3769393ab1479b
 
@@ -23,7 +23,7 @@ WORKDIR /src
 
 RUN cargo build --release --bin solana-test-validator
 
-FROM debian:bookworm-slim
+FROM debian:bookworm-slim@sha256:f9c6a2fd2ddbc23e336b6257a5245e31f996953ef06cd13a59fa0a1df2d5c252
 RUN apt-get update && \
     apt-get install -y --no-install-recommends libssl3 ca-certificates && \
     rm -rf /var/lib/apt/lists/*
