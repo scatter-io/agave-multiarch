@@ -35,6 +35,8 @@ jobs:
     permissions:
       contents: read
       packages: write
+      id-token: write       # for cosign keyless + attestation OIDC
+      attestations: write   # for actions/attest-build-provenance
     steps:
       - uses: actions/checkout@v4
 
@@ -65,6 +67,21 @@ jobs:
           outputs: |
             type=image,name=${{ env.REGISTRY }}/${{ env.IMAGE_NAME }},push-by-digest=true,name-canonical=true,push=true
 
+      - name: Attest build provenance (per-arch digest)
+        uses: actions/attest-build-provenance@v2
+        with:
+          subject-name: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          subject-digest: ${{ steps.build.outputs.digest }}
+          push-to-registry: true
+
+      - name: Install cosign
+        uses: sigstore/cosign-installer@v3
+
+      - name: Sign per-arch digest (cosign keyless)
+        run: |
+          cosign sign --yes \
+            "${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}@${{ steps.build.outputs.digest }}"
+
       - name: Export digest
         run: |
           mkdir -p /tmp/digests
@@ -82,6 +99,8 @@ jobs:
     permissions:
       contents: read
       packages: write
+      id-token: write       # for cosign keyless + attestation OIDC
+      attestations: write   # for actions/attest-build-provenance
     steps:
       - uses: actions/download-artifact@v4
         with:
@@ -105,6 +124,7 @@ jobs:
           echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
 
       - name: Create multi-arch manifest
+        id: manifest
         run: |
           VERSION="${{ steps.ver.outputs.version }}"
           IMAGE="${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}"
@@ -117,6 +137,26 @@ jobs:
             -t "${IMAGE}:v${VERSION}" \
             -t "${IMAGE}:latest" \
             ${SOURCES}
+          # Compute index digest from raw manifest bytes (sha256 of the bytes
+          # IS the content-addressable digest — guaranteed correct regardless
+          # of buildx version's template surface).
+          INDEX_DIGEST="sha256:$(docker buildx imagetools inspect "${IMAGE}:v${VERSION}" --raw | sha256sum | awk '{print $1}')"
+          echo "index_digest=${INDEX_DIGEST}" >> "$GITHUB_OUTPUT"
+
+      - name: Attest build provenance (multi-arch index)
+        uses: actions/attest-build-provenance@v2
+        with:
+          subject-name: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          subject-digest: ${{ steps.manifest.outputs.index_digest }}
+          push-to-registry: true
+
+      - name: Install cosign
+        uses: sigstore/cosign-installer@v3
+
+      - name: Sign multi-arch index (cosign keyless)
+        run: |
+          cosign sign --yes \
+            "${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}@${{ steps.manifest.outputs.index_digest }}"
 
       - name: Inspect manifest
         run: |
