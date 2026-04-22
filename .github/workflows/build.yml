@@ -12,6 +12,10 @@ on:
     paths:
       - "Dockerfile.*"
       - ".github/workflows/build.yml"
+  pull_request:
+    paths:
+      - "Dockerfile.*"
+      - ".github/workflows/build.yml"
 
 env:
   REGISTRY: ghcr.io
@@ -35,6 +39,8 @@ jobs:
     permissions:
       contents: read
       packages: write
+      id-token: write       # for cosign keyless + attestation OIDC
+      attestations: write   # for actions/attest-build-provenance
     steps:
       - uses: actions/checkout@v4
 
@@ -63,14 +69,34 @@ jobs:
           build-args: |
             AGAVE_VERSION=${{ steps.ver.outputs.version }}
           outputs: |
-            type=image,name=${{ env.REGISTRY }}/${{ env.IMAGE_NAME }},push-by-digest=true,name-canonical=true,push=true
+            type=image,name=${{ env.REGISTRY }}/${{ env.IMAGE_NAME }},push-by-digest=true,name-canonical=true,push=${{ github.event_name != 'pull_request' }}
+
+      - name: Attest build provenance (per-arch digest)
+        if: github.event_name != 'pull_request'
+        uses: actions/attest-build-provenance@v2
+        with:
+          subject-name: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          subject-digest: ${{ steps.build.outputs.digest }}
+          push-to-registry: true
+
+      - name: Install cosign
+        if: github.event_name != 'pull_request'
+        uses: sigstore/cosign-installer@v3
+
+      - name: Sign per-arch digest (cosign keyless)
+        if: github.event_name != 'pull_request'
+        run: |
+          cosign sign --yes \
+            "${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}@${{ steps.build.outputs.digest }}"
 
       - name: Export digest
+        if: github.event_name != 'pull_request'
         run: |
           mkdir -p /tmp/digests
           echo "${{ steps.build.outputs.digest }}" > "/tmp/digests/${{ matrix.arch }}"
 
       - uses: actions/upload-artifact@v4
+        if: github.event_name != 'pull_request'
         with:
           name: digest-${{ matrix.arch }}
           path: /tmp/digests/*
@@ -78,10 +104,13 @@ jobs:
 
   merge:
     needs: build
+    if: github.event_name != 'pull_request'
     runs-on: ubuntu-24.04
     permissions:
       contents: read
       packages: write
+      id-token: write       # for cosign keyless + attestation OIDC
+      attestations: write   # for actions/attest-build-provenance
     steps:
       - uses: actions/download-artifact@v4
         with:
@@ -105,6 +134,7 @@ jobs:
           echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
 
       - name: Create multi-arch manifest
+        id: manifest
         run: |
           VERSION="${{ steps.ver.outputs.version }}"
           IMAGE="${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}"
@@ -117,6 +147,24 @@ jobs:
             -t "${IMAGE}:v${VERSION}" \
             -t "${IMAGE}:latest" \
             ${SOURCES}
+          INDEX_DIGEST=$(docker buildx imagetools inspect "${IMAGE}:v${VERSION}" | awk '/^Digest:/ {print $2; exit}')
+          if [ -z "${INDEX_DIGEST}" ]; then echo "failed to resolve index digest"; exit 1; fi
+          echo "index_digest=${INDEX_DIGEST}" >> "$GITHUB_OUTPUT"
+
+      - name: Attest build provenance (multi-arch index)
+        uses: actions/attest-build-provenance@v2
+        with:
+          subject-name: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          subject-digest: ${{ steps.manifest.outputs.index_digest }}
+          push-to-registry: true
+
+      - name: Install cosign
+        uses: sigstore/cosign-installer@v3
+
+      - name: Sign multi-arch index (cosign keyless)
+        run: |
+          cosign sign --yes \
+            "${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}@${{ steps.manifest.outputs.index_digest }}"
 
       - name: Inspect manifest
         run: |
