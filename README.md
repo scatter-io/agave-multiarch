@@ -8,6 +8,9 @@ from [Agave](https://github.com/anza-xyz/agave).
 
 Image: `ghcr.io/scatter-io/agave-multiarch:<tag>`
 
+Every published image is signed keylessly and carries a SLSA build
+provenance attestation — see [Verifying pulled images](#verifying-pulled-images).
+
 ## Tags
 
 - `v<version>` — pinned to Agave release `v<version>` (e.g. `v3.1.11`).
@@ -44,6 +47,36 @@ gh api "/repos/anza-xyz/agave/git/refs/tags/v${VERSION}" --jq .object.sha
 
 The debian base images are pinned to digests (`debian:bookworm{,-slim}@sha256:...`);
 bump these manually (or via Dependabot) when security updates land.
+
+## Verifying pulled images
+
+Every published image (both per-arch and the multi-arch index) carries:
+
+- A **SLSA build-provenance attestation** produced by
+  [`actions/attest-build-provenance`](https://github.com/actions/attest-build-provenance),
+  binding the image to this repo's workflow at a specific commit SHA.
+- A **keyless cosign signature** issued via Fulcio using the GitHub Actions
+  OIDC token (no long-lived signing keys).
+
+Verify the signature with `cosign`:
+
+```bash
+cosign verify \
+  --certificate-identity-regexp '^https://github.com/scatter-io/agave-multiarch/\.github/workflows/build\.yml@' \
+  --certificate-oidc-issuer 'https://token.actions.githubusercontent.com' \
+  ghcr.io/scatter-io/agave-multiarch:v3.1.11
+```
+
+Verify the provenance attestation with `gh`:
+
+```bash
+gh attestation verify \
+  --owner scatter-io \
+  oci://ghcr.io/scatter-io/agave-multiarch:v3.1.11
+```
+
+Both commands resolve the tag to a digest before verifying, so pinning by
+digest is equivalent.
 
 ## Package visibility
 
